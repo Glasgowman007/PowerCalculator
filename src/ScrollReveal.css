@@ -1,0 +1,10 @@
+.scroll-reveal {
+  display: block;
+}
+.scroll-reveal-text {
+  display: inline;
+}
+.word {
+  display: inline-block;
+  transition: opacity 0.3s, filter 0.3s;
+} 
