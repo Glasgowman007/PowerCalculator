@@ -1,511 +1,423 @@
-import './App.css';
 import './index.css';
-import { useState } from 'react';
-import ScrollReveal from './ScrollReveal';
-import ResultsReveal from './ResultsReveal';
+import { useMemo, useState } from 'react';
 import RotatingText from './RotatingText';
 
-function App() {
-  const [voltage, setVoltage] = useState('');
-  const [current, setCurrent] = useState('');
-  const [resistance, setResistance] = useState('');
-  const [power, setPower] = useState('');
-  const [time, setTime] = useState('');
-  const [calculated, setCalculated] = useState({ v: '', i: '', r: '', p: '', t: '', e: '' });
-  const [resultIndex, setResultIndex] = useState(0);
+/* ---------- Quantities ---------- */
+const QUANTITIES = {
+  v: { label: 'Voltage', symbol: 'V', unit: 'V', color: 'volt' },
+  i: { label: 'Current', symbol: 'I', unit: 'A', color: 'amp' },
+  r: { label: 'Resistance', symbol: 'R', unit: 'Ω', color: 'ohm' },
+  p: { label: 'Power', symbol: 'P', unit: 'kW', color: 'watt' },
+  t: { label: 'Time', symbol: 't', unit: 'hours', color: 'time' },
+  e: { label: 'Energy', symbol: 'E', unit: 'kWh', color: 'energy' },
+};
 
-  const calculate = (e) => {
-    e.preventDefault();
-    let v = parseFloat(voltage);
-    let i = parseFloat(current);
-    let r = parseFloat(resistance);
-    let p = parseFloat(power);
-    let t = parseFloat(time);
-    let eVal = null;
-    // Try to calculate missing values based on available inputs
-    // 1. If any two of V, I, R are present, calculate the third and power
-    if (!isNaN(v) && !isNaN(i)) {
+const COLOR = {
+  volt: { text: 'text-volt', bg: 'bg-volt', soft: 'bg-volt/10', ring: 'focus:ring-volt', border: 'border-volt' },
+  amp: { text: 'text-amp', bg: 'bg-amp', soft: 'bg-amp/10', ring: 'focus:ring-amp', border: 'border-amp' },
+  ohm: { text: 'text-ohm', bg: 'bg-ohm', soft: 'bg-ohm/10', ring: 'focus:ring-ohm', border: 'border-ohm' },
+  watt: { text: 'text-watt', bg: 'bg-watt', soft: 'bg-watt/10', ring: 'focus:ring-watt', border: 'border-watt' },
+  time: { text: 'text-slate-600', bg: 'bg-slate-600', soft: 'bg-slate-100', ring: 'focus:ring-slate-500', border: 'border-slate-500' },
+  energy: { text: 'text-energy', bg: 'bg-energy', soft: 'bg-energy/10', ring: 'focus:ring-energy', border: 'border-energy' },
+};
+
+const MAIN_KEYS = ['v', 'i', 'r', 'p'];
+
+/* Format numbers: up to 3 decimal places, no trailing zeros */
+const fmt = (n) => {
+  if (n === undefined || n === null || !isFinite(n)) return '';
+  const rounded = Math.round(n * 1000) / 1000;
+  return rounded.toLocaleString('en-GB', { maximumFractionDigits: 3 });
+};
+
+/* ---------- Solver: returns values + worked steps ---------- */
+function solve(raw) {
+  const k = {};
+  for (const key of ['v', 'i', 'r', 'p', 't']) {
+    const n = parseFloat(raw[key]);
+    if (!isNaN(n)) k[key] = n;
+  }
+  const given = MAIN_KEYS.filter((key) => key in k);
+  const hasTime = 't' in k;
+
+  if (given.length < 2 && !(given.includes('p') && hasTime)) {
+    return { error: 'Enter any two of voltage, current, resistance and power (plus time if you want energy).' };
+  }
+  for (const key of [...given, ...(hasTime ? ['t'] : [])]) {
+    if (k[key] <= 0) return { error: `${QUANTITIES[key].label} must be greater than zero.` };
+  }
+
+  const steps = [];
+  let { v, i, r, p } = k;
+  const pair = given.slice(0, 2).sort().join('');
+
+  switch (pair) {
+    case 'iv': // V and I
       r = v / i;
-      p = isNaN(p) ? (v * i) / 1000 : p;
-    } else if (!isNaN(v) && !isNaN(r)) {
+      steps.push({ find: 'r', formula: 'R = V ÷ I', working: `${fmt(v)} ÷ ${fmt(i)}`, result: r });
+      p = (v * i) / 1000;
+      steps.push({ find: 'p', formula: 'P = V × I', working: `${fmt(v)} × ${fmt(i)} = ${fmt(v * i)} W`, result: p, note: '÷ 1000 to convert watts to kilowatts' });
+      break;
+    case 'rv': // V and R
       i = v / r;
-      p = isNaN(p) ? (v * i) / 1000 : p;
-    } else if (!isNaN(i) && !isNaN(r)) {
+      steps.push({ find: 'i', formula: 'I = V ÷ R', working: `${fmt(v)} ÷ ${fmt(r)}`, result: i });
+      p = (v * i) / 1000;
+      steps.push({ find: 'p', formula: 'P = V × I', working: `${fmt(v)} × ${fmt(i)} = ${fmt(v * i)} W`, result: p, note: `Check: P = V² ÷ R = ${fmt(v)}² ÷ ${fmt(r)} = ${fmt((v * v) / r)} W` });
+      break;
+    case 'ir': // I and R
       v = i * r;
-      p = isNaN(p) ? (v * i) / 1000 : p;
-    }
-    // 2. If Power and Time are present, calculate Energy
-    if (!isNaN(p) && !isNaN(t)) {
-      eVal = p * t;
-    }
-    // 3. If Power and Voltage are present, calculate Current
-    if (!isNaN(p) && !isNaN(v)) {
-      i = p * 1000 / v;
+      steps.push({ find: 'v', formula: 'V = I × R', working: `${fmt(i)} × ${fmt(r)}`, result: v });
+      p = (v * i) / 1000;
+      steps.push({ find: 'p', formula: 'P = V × I', working: `${fmt(v)} × ${fmt(i)} = ${fmt(v * i)} W`, result: p, note: `Check: P = I² × R = ${fmt(i)}² × ${fmt(r)} = ${fmt(i * i * r)} W` });
+      break;
+    case 'pv': // P and V
+      i = (p * 1000) / v;
+      steps.push({ find: 'i', formula: 'I = P ÷ V', working: `(${fmt(p)} × 1000) ÷ ${fmt(v)}`, result: i, note: 'Convert kW to W first (× 1000)' });
       r = v / i;
-    }
-    // 4. If Power and Current are present, calculate Voltage
-    if (!isNaN(p) && !isNaN(i)) {
-      v = p * 1000 / i;
+      steps.push({ find: 'r', formula: 'R = V ÷ I', working: `${fmt(v)} ÷ ${fmt(i)}`, result: r });
+      break;
+    case 'ip': // P and I
+      v = (p * 1000) / i;
+      steps.push({ find: 'v', formula: 'V = P ÷ I', working: `(${fmt(p)} × 1000) ÷ ${fmt(i)}`, result: v, note: 'Convert kW to W first (× 1000)' });
       r = v / i;
-    }
-    // 5. If Power and Resistance are present, calculate Current and Voltage
-    if (!isNaN(p) && !isNaN(r)) {
+      steps.push({ find: 'r', formula: 'R = V ÷ I', working: `${fmt(v)} ÷ ${fmt(i)}`, result: r });
+      break;
+    case 'pr': // P and R
       i = Math.sqrt((p * 1000) / r);
+      steps.push({ find: 'i', formula: 'I = √(P ÷ R)', working: `√((${fmt(p)} × 1000) ÷ ${fmt(r)})`, result: i, note: 'Convert kW to W first (× 1000)' });
       v = i * r;
-    }
-    setCalculated({
-      v: isNaN(v) ? '' : v.toFixed(2),
-      i: isNaN(i) ? '' : i.toFixed(2),
-      r: isNaN(r) ? '' : r.toFixed(2),
-      p: isNaN(p) ? '' : p.toFixed(3),
-      t: isNaN(t) ? '' : t.toFixed(2),
-      e: eVal === null || isNaN(eVal) ? '' : eVal.toFixed(3),
-    });
-    setResultIndex(0); // Always show the first answer first
-  };
+      steps.push({ find: 'v', formula: 'V = I × R', working: `${fmt(i)} × ${fmt(r)}`, result: v });
+      break;
+    default:
+      break; // only P (+ time) given
+  }
 
-  // Reset all fields
-  const resetFields = () => {
-    setVoltage('');
-    setCurrent('');
-    setResistance('');
-    setPower('');
-    setTime('');
-    setCalculated({ v: '', i: '', r: '', p: '', t: '', e: '' });
-    setResultIndex(0); // Reset to first answer
-  };
+  let e;
+  if (hasTime && p !== undefined) {
+    e = p * k.t;
+    steps.push({ find: 'e', formula: 'E = P × t', working: `${fmt(p)} × ${fmt(k.t)}`, result: e });
+  }
 
-  // Count how many of the main four inputs are filled (voltage, current, resistance, power)
-  const mainInputs = [voltage, current, resistance, power];
-  const filledMainInputs = mainInputs.filter(val => val !== '');
-  const filledMainCount = filledMainInputs.length;
+  return { values: { v, i, r, p, t: k.t, e }, given: [...given, ...(hasTime ? ['t'] : [])], steps };
+}
 
-  // Disable logic: once 2 or more of the main four are filled, disable the other two
-  const disableVoltage = filledMainCount >= 2 && voltage === '';
-  const disableCurrent = filledMainCount >= 2 && current === '';
-  const disableResistance = filledMainCount >= 2 && resistance === '';
-  const disablePower = filledMainCount >= 2 && power === '';
-  // Time is not affected
-  const disableTime = false;
-
+/* ---------- Components ---------- */
+function Field({ id, value, onChange, disabled }) {
+  const q = QUANTITIES[id];
+  const c = COLOR[q.color];
   return (
-    <div className="min-h-screen bg-beige flex flex-col items-center justify-start py-8 px-2">
-      {/* Title: Calculate stationary, rolling word next to it */}
-      <div className="flex justify-center items-center w-full mb-8 mt-2">
-        <span className="text-4xl md:text-5xl font-extrabold text-[#222] mr-8">Calculate</span>
-        <div style={{ minWidth: '200px', display: 'flex', justifyContent: 'center' }}>
-          <RotatingText
-            texts={['Power', 'Voltage', 'Current', 'Resistance']}
-            mainClassName="text-4xl md:text-5xl font-extrabold bg-[#5b2fff] text-white px-4 py-2 rounded-lg text-center"
-            staggerFrom={"last"}
-            initial={{ y: "100%" }}
-            animate={{ y: 0 }}
-            exit={{ y: "-120%" }}
-            staggerDuration={0.025}
-            splitLevelClassName="overflow-hidden pb-0.5 sm:pb-1 md:pb-1"
-            transition={{ type: "spring", damping: 30, stiffness: 400 }}
-            rotationInterval={2000}
-          />
-        </div>
+    <label className={`block transition-opacity ${disabled ? 'opacity-40' : ''}`}>
+      <span className="flex items-center gap-2 mb-1.5 text-sm font-semibold text-slate-700">
+        <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md text-xs font-bold text-white ${c.bg}`}>{q.symbol}</span>
+        {q.label}
+      </span>
+      <div className="relative">
+        <input
+          type="number"
+          inputMode="decimal"
+          step="any"
+          min="0"
+          value={value}
+          onChange={(e) => onChange(id, e.target.value)}
+          disabled={disabled}
+          placeholder={disabled ? 'Will be calculated' : 'Leave blank if unknown'}
+          className={`w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 pr-16 text-lg text-slate-900 placeholder:text-sm placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 ${c.ring} disabled:cursor-not-allowed`}
+        />
+        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm font-medium text-slate-500">{q.unit}</span>
       </div>
-      <div className="max-w-2xl mx-auto mb-8 text-center text-lg text-[#333] bg-white bg-opacity-80 rounded-lg px-6 py-4 shadow">
-        Use this calculator to practise your understanding of electrical calculations. Start by entering two known values – for example, voltage and current and time – and use the formulas to calculate the missing values for resistance, power, and energy. Once you've worked out your answers, you can click "Calculate" to check them. This tool will show the full working so you can follow each step and build confidence in applying formulas like P = VI and R = V/I. Use this as a learning aid – the goal is to understand, not just get the right number!
+    </label>
+  );
+}
+
+function Circuit({ shown }) {
+  const val = (k) => (shown[k] !== undefined ? `${fmt(shown[k])} ${QUANTITIES[k].unit}` : '?');
+  return (
+    <svg viewBox="0 0 420 200" className="w-full h-auto" role="img" aria-label="Simple circuit showing a supply, current and a resistor">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+          <polygon points="0 0, 10 4, 0 8" fill="#db2777" />
+        </marker>
+      </defs>
+      {/* Loop wire */}
+      <path d="M70 60 H350 V150 H70 Z" fill="none" stroke="#334155" strokeWidth="3" strokeLinejoin="round" />
+      {/* Supply (battery symbol) on left side */}
+      <rect x="55" y="90" width="30" height="30" fill="#fff" />
+      <line x1="52" y1="98" x2="88" y2="98" stroke="#2563eb" strokeWidth="4" />
+      <line x1="60" y1="110" x2="80" y2="110" stroke="#2563eb" strokeWidth="4" />
+      <text x="40" y="108" textAnchor="end" className="fill-volt" fontSize="14" fontWeight="700">V</text>
+      <text x="40" y="126" textAnchor="end" fill="#2563eb" fontSize="13">{val('v')}</text>
+      {/* Resistor on top */}
+      <rect x="170" y="45" width="90" height="30" rx="4" fill="#fff" stroke="#7c3aed" strokeWidth="3" />
+      <text x="215" y="65" textAnchor="middle" fill="#7c3aed" fontSize="14" fontWeight="700">R</text>
+      <text x="215" y="32" textAnchor="middle" fill="#7c3aed" fontSize="13">{val('r')}</text>
+      {/* Current arrow on right */}
+      <line x1="350" y1="85" x2="350" y2="125" stroke="#db2777" strokeWidth="3" markerEnd="url(#arrow)" />
+      <text x="368" y="102" fill="#db2777" fontSize="14" fontWeight="700">I</text>
+      <text x="368" y="120" fill="#db2777" fontSize="13">{val('i')}</text>
+      {/* Power label at bottom */}
+      <text x="210" y="178" textAnchor="middle" fill="#d97706" fontSize="13">
+        <tspan fontWeight="700">P</tspan> = {val('p')}
+      </text>
+    </svg>
+  );
+}
+
+function ValueTile({ id, value, isGiven, revealed }) {
+  const q = QUANTITIES[id];
+  const c = COLOR[q.color];
+  const has = value !== undefined;
+  return (
+    <div className={`rounded-xl border-l-4 ${c.border} ${c.soft} px-3 py-2.5`}>
+      <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <span>{q.label}</span>
+        {has && isGiven && <span className="rounded bg-white px-1.5 py-0.5 text-[10px] text-slate-500">given</span>}
       </div>
-      <div className="flex flex-col items-center w-full max-w-6xl">
-        {/* Visual Diagram */}
-        <div className="bg-white rounded-xl shadow-lg p-4 mb-4 flex flex-col items-center w-full">
-          <svg width="600" height="220" className="mb-2">
-            {/* Wires */}
-            <line x1="80" y1="110" x2="200" y2="110" stroke="#181818" strokeWidth="6" />
-            <line x1="340" y1="110" x2="520" y2="110" stroke="#181818" strokeWidth="6" />
-            {/* Resistor label above rectangle */}
-            <text x="270" y="80" fill="#7c3aed" fontSize="18" fontWeight="bold" textAnchor="middle">Resistor</text>
-            {/* Resistor as rectangle with no fill */}
-            <rect x="200" y="85" width="140" height="50" fill="none" stroke="#7c3aed" strokeWidth="4" rx="10" />
-            {/* Resistance value inside rectangle */}
-            {calculated.r && (
-              <text x="270" y="115" fill="#7c3aed" fontSize="17" textAnchor="middle">{calculated.r} Ω</text>
-            )}
-            {/* Voltage value */}
-            {calculated.v && (
-              <text x="110" y="60" fill="#60a5fa" fontSize="18" textAnchor="middle">{calculated.v} V</text>
-            )}
-            <text x="110" y="180" fill="#60a5fa" fontSize="18" textAnchor="middle">Voltage</text>
-            {/* Current value and arrow */}
-            {calculated.i && (
-              <text x="560" y="90" fill="#f472b6" fontSize="18" textAnchor="middle">{calculated.i} A</text>
-            )}
-            <line x1="500" y1="110" x2="540" y2="110" stroke="#f472b6" strokeWidth="4" markerEnd="url(#arrowhead)" />
-            {/* Current label below */}
-            <text x="470" y="180" fill="#f472b6" fontSize="18">Current</text>
-            {/* Arrowhead marker */}
-            <defs>
-              <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
-                <polygon points="0 0, 10 4, 0 8" fill="#f472b6" />
-              </marker>
-            </defs>
-          </svg>
-        </div>
-        {/* Calculation Form and Results side by side on large screens, stacked on small screens */}
-        <div className="flex flex-col md:flex-row w-full gap-6 mb-4">
-          <form onSubmit={calculate} className="bg-white rounded-xl shadow-lg p-6 flex flex-col gap-4 w-full">
-            <div className="flex flex-col gap-1">
-              <label className="text-black font-semibold">Voltage (V):</label>
-              <input
-                type="number"
-                value={voltage}
-                onChange={e => setVoltage(e.target.value)}
-                placeholder="Enter voltage or leave blank"
-                className="rounded-md px-3 py-2 bg-beige text-black focus:outline-none focus:ring-2 focus:ring-accentBlue"
-                step="any"
-                disabled={disableVoltage}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-black font-semibold">Current (A):</label>
-              <input
-                type="number"
-                value={current}
-                onChange={e => setCurrent(e.target.value)}
-                placeholder="Enter current or leave blank"
-                className="rounded-md px-3 py-2 bg-beige text-black focus:outline-none focus:ring-2 focus:ring-accentBlue"
-                step="any"
-                disabled={disableCurrent}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-black font-semibold">Resistance (Ω):</label>
-              <input
-                type="number"
-                value={resistance}
-                onChange={e => setResistance(e.target.value)}
-                placeholder="Enter resistance or leave blank"
-                className="rounded-md px-3 py-2 bg-beige text-black focus:outline-none focus:ring-2 focus:ring-accentBlue"
-                step="any"
-                disabled={disableResistance}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-black font-semibold">Power (kW):</label>
-              <input
-                type="number"
-                value={power}
-                onChange={e => setPower(e.target.value)}
-                placeholder="Enter power or leave blank"
-                className="rounded-md px-3 py-2 bg-beige text-black focus:outline-none focus:ring-2 focus:ring-accentBlue"
-                step="any"
-                disabled={disablePower}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-black font-semibold">Time (hours):</label>
-              <input
-                type="number"
-                value={time}
-                onChange={e => setTime(e.target.value)}
-                placeholder="Enter time or leave blank"
-                className="rounded-md px-3 py-2 bg-beige text-black focus:outline-none focus:ring-2 focus:ring-accentBlue"
-                step="any"
-                disabled={disableTime}
-              />
-            </div>
-            <div className="text-xs text-black text-center">Enter any two values to calculate the others.</div>
-            <button type="submit" className="mt-2 bg-accentBlue hover:bg-accentPurple text-white font-bold py-2 px-4 rounded-lg shadow transition">Calculate</button>
-            <button type="button" onClick={resetFields} className="mt-2 bg-accentPink hover:bg-accentPurple text-white font-bold py-2 px-4 rounded-lg shadow transition">Reset</button>
-          </form>
-          {calculated.p && (
-            <ScrollReveal containerClassName="w-full">
-              <div className="bg-white rounded-xl shadow-2xl p-6 w-full text-black self-start">
-                <div className="space-y-1 text-lg">
-                  <h2 id="answers-heading" className="text-5xl font-extrabold text-accentBlue mb-10">Results</h2>
-                  {(() => {
-                    // Use calculated values for displaying results
-                    const v = calculated.v;
-                    const i = calculated.i;
-                    const r = calculated.r;
-                    const p = calculated.p;
-                    const t = calculated.t;
-                    const e = calculated.e;
-                    const results = [];
-
-                    // --- Always show current, voltage, and power calculations first if possible ---
-                    // Current
-                    if (p && v) {
-                      results.push(
-                        <ScrollReveal key="calc-current-pv" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">I = (P × 1000) / V</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{p} × 1000 / {v} = {i} A</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    } else if (v && r) {
-                      results.push(
-                        <ScrollReveal key="calc-current-vr" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">I = V / R</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} / {r} = {i} A</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    }
-
-                    // Voltage
-                    if (i && r) {
-                      results.push(
-                        <ScrollReveal key="calc-voltage-ir" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">V = I × R</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{i} × {r} = {v} V</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    } else if (p && i) {
-                      results.push(
-                        <ScrollReveal key="calc-voltage-pi" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">V = (P × 1000) / I</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{p} × 1000 / {i} = {v} V</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    }
-
-                    // Power
-                    if (v && i) {
-                      results.push(
-                        <ScrollReveal key="calc-power-vi" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V × I / 1000</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} × {i} / 1000 = {p} kW</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    }
-
-                    // Calculation Steps
-                    if (v && i) {
-                      results.push(
-                        <ScrollReveal key="r" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">R = V / I</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} / {i} = {r} Ω</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="p" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V × I</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} × {i} = {(parseFloat(v) * parseFloat(i)).toFixed(2)} W</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="pkW" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P (kW) = P / 1000</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{(parseFloat(v) * parseFloat(i)).toFixed(2)} / 1000 = {p} kW</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      if (r) {
-                        const pIsqR = (Math.pow(parseFloat(i), 2) * parseFloat(r)).toFixed(2);
-                        results.push(
-                          <ScrollReveal key="p-isqr" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                            <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                              <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = I²R</div>
-                              <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{i}² × {r} = {pIsqR} W</div>
-                            </div>
-                          </ScrollReveal>
-                        );
-                      }
-                    } else if (v && r) {
-                      results.push(
-                        <ScrollReveal key="i" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">I = V / R</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} / {r} = {i} A</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="p" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V × I</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} × {i} = {(parseFloat(v) * parseFloat(i)).toFixed(2)} W</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="pkW" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P (kW) = P / 1000</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{(parseFloat(v) * parseFloat(i)).toFixed(2)} / 1000 = {p} kW</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      if (r) {
-                        const pVsqR = (Math.pow(parseFloat(v), 2) / parseFloat(r)).toFixed(2);
-                        results.push(
-                          <ScrollReveal key="p-vsqr" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                            <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                              <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V² / R</div>
-                              <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v}² / {r} = {pVsqR} W</div>
-                            </div>
-                          </ScrollReveal>
-                        );
-                      }
-                    } else if (i && r) {
-                      results.push(
-                        <ScrollReveal key="v" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">V = I × R</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{i} × {r} = {v} V</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="p" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V × I</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v} × {i} = {(parseFloat(v) * parseFloat(i)).toFixed(2)} W</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      results.push(
-                        <ScrollReveal key="pkW" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P (kW) = P / 1000</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{(parseFloat(v) * parseFloat(i)).toFixed(2)} / 1000 = {p} kW</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                      if (r) {
-                        const pIsqR = (Math.pow(parseFloat(i), 2) * parseFloat(r)).toFixed(2);
-                        results.push(
-                          <ScrollReveal key="p-isqr-2" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                            <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                              <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = I²R</div>
-                              <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{i}² × {r} = {pIsqR} W</div>
-                            </div>
-                          </ScrollReveal>
-                        );
-                      }
-                      if (v && r) {
-                        const pVsqR = (Math.pow(parseFloat(v), 2) / parseFloat(r)).toFixed(2);
-                        results.push(
-                          <ScrollReveal key="p-vsqr-2" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                            <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                              <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">P = V² / R</div>
-                              <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{v}² / {r} = {pVsqR} W</div>
-                            </div>
-                          </ScrollReveal>
-                        );
-                      }
-                    }
-                    // Show energy formulas if relevant
-                    if (calculated.v && calculated.i && calculated.t) {
-                      const energy = (parseFloat(calculated.v) * parseFloat(calculated.i) * parseFloat(calculated.t) / 1000).toFixed(3);
-                      results.push(
-                        <ScrollReveal key="energy-long-vit" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Energy (kWh) = Voltage (V) × Current (A) × Time (hours) / 1000</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{calculated.v} × {calculated.i} × {calculated.t} / 1000 = {energy} kWh</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    } else if (calculated.p && calculated.t) {
-                      results.push(
-                        <ScrollReveal key="energy-long" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                          <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                            <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Energy (kWh) = Power (kW) × Time (hours)</div>
-                            <div className="text-4xl md:text-5xl font-extrabold text-accentBlue">{calculated.p} × {calculated.t} = {calculated.e} kWh</div>
-                          </div>
-                        </ScrollReveal>
-                      );
-                    }
-                    // Answers
-                    results.push(
-                      <ScrollReveal key="ans-v" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Voltage (V):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.v}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    results.push(
-                      <ScrollReveal key="ans-i" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Current (A):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.i}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    results.push(
-                      <ScrollReveal key="ans-r" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Resistance (Ω):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.r}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    results.push(
-                      <ScrollReveal key="ans-p" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Power (kW):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.p}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    results.push(
-                      <ScrollReveal key="ans-t" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Time (hours):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.t}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    results.push(
-                      <ScrollReveal key="ans-e" baseOpacity={0} enableBlur={true} baseRotation={5} blurStrength={10}>
-                        <div className="reveal-answer flex flex-col items-center justify-center min-h-[12rem] h-48 md:h-64 text-center">
-                          <div className="text-3xl md:text-4xl font-extrabold text-black mb-4">Energy (kWh):</div>
-                          <div className="text-5xl md:text-6xl font-extrabold text-accentBlue">{calculated.e}</div>
-                        </div>
-                      </ScrollReveal>
-                    );
-                    // Only show one result at a time
-                    const show = results[resultIndex] || null;
-                    return (
-                      <div className="flex flex-col items-center">
-                        <div className="w-full">{show}</div>
-                        <div className="flex gap-4 mt-6">
-                          <button
-                            className="bg-accentBlue hover:bg-accentPurple text-white font-bold py-2 px-6 rounded-lg text-xl shadow"
-                            onClick={() => setResultIndex(i => Math.max(0, i - 1))}
-                            disabled={resultIndex === 0}
-                          >
-                            Previous
-                          </button>
-                          <button
-                            className="bg-accentBlue hover:bg-accentPurple text-white font-bold py-2 px-6 rounded-lg text-xl shadow"
-                            onClick={() => setResultIndex(i => Math.min(results.length - 1, i + 1))}
-                            disabled={resultIndex === results.length - 1}
-                          >
-                            Next
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            </ScrollReveal>
-          )}
-        </div>
+      <div className={`mt-0.5 text-xl font-bold ${c.text}`}>
+        {!has ? <span className="text-slate-300">—</span> : revealed ? `${fmt(value)} ${q.unit}` : <span className="text-slate-400">?</span>}
       </div>
     </div>
   );
 }
 
-export default App;
+function Step({ step, index }) {
+  const q = QUANTITIES[step.find];
+  const c = COLOR[q.color];
+  return (
+    <li className="animate-in rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start gap-3">
+        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ${c.bg}`}>{index + 1}</span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-slate-500">Find the {q.label.toLowerCase()}</div>
+          <div className="mt-1 font-mono text-lg text-slate-900">{step.formula}</div>
+          <div className="mt-1 font-mono text-slate-700 break-words">
+            = {step.working} ⇒ <span className={`font-bold ${c.text}`}>{fmt(step.result)} {q.unit}</span>
+          </div>
+          {step.note && <div className="mt-2 text-sm text-slate-500">{step.note}</div>}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+const FORMULAS = [
+  ['V = I × R', 'Ohm’s law'],
+  ['I = V ÷ R', ''],
+  ['R = V ÷ I', ''],
+  ['P = V × I', 'watts'],
+  ['P = I² × R', ''],
+  ['P = V² ÷ R', ''],
+  ['E = P × t', 'kWh = kW × hours'],
+  ['1 kW = 1000 W', ''],
+];
+
+/* ---------- App ---------- */
+const EMPTY = { v: '', i: '', r: '', p: '', t: '' };
+
+export default function App() {
+  const [inputs, setInputs] = useState(EMPTY);
+  const [result, setResult] = useState(null);
+  const [revealed, setRevealed] = useState(0);
+
+  const filledMain = MAIN_KEYS.filter((k) => inputs[k] !== '').length;
+  const isDisabled = (k) => k !== 't' && filledMain >= 2 && inputs[k] === '';
+
+  const onChange = (k, val) => {
+    setInputs((s) => ({ ...s, [k]: val }));
+    setResult(null);
+  };
+
+  const calculate = (e) => {
+    e.preventDefault();
+    setResult(solve(inputs));
+    setRevealed(0);
+  };
+
+  const reset = () => {
+    setInputs(EMPTY);
+    setResult(null);
+    setRevealed(0);
+  };
+
+  const steps = result?.steps ?? [];
+  const allShown = steps.length > 0 && revealed >= steps.length;
+
+  // Values visible so far: given ones plus any found in revealed steps
+  const shown = useMemo(() => {
+    const out = {};
+    if (!result?.values) {
+      for (const k of ['v', 'i', 'r', 'p']) {
+        const n = parseFloat(inputs[k]);
+        if (!isNaN(n)) out[k] = n;
+      }
+      return out;
+    }
+    for (const [k, val] of Object.entries(result.values)) {
+      if (val !== undefined) out[k] = val;
+    }
+    return out;
+  }, [result, inputs]);
+
+  return (
+    <div className="min-h-screen bg-paper text-slate-900">
+      {/* Header */}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-5 sm:px-6">
+          <span className="text-2xl">⚡</span>
+          <h1 className="flex items-center gap-2 text-2xl font-extrabold tracking-tight sm:text-3xl">
+            Calculate
+            <RotatingText
+              texts={['Power', 'Voltage', 'Current', 'Resistance', 'Energy']}
+              mainClassName="inline-flex bg-ohm text-white px-2.5 py-0.5 rounded-lg overflow-hidden"
+              staggerFrom="last"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '-120%' }}
+              staggerDuration={0.025}
+              splitLevelClassName="overflow-hidden pb-0.5"
+              transition={{ type: 'spring', damping: 30, stiffness: 400 }}
+              rotationInterval={2200}
+            />
+          </h1>
+          <p className="w-full text-slate-600 sm:w-auto sm:ml-auto sm:text-right sm:text-sm">
+            A practice tool for electrical calculations
+          </p>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
+        {/* How to use */}
+        <section className="mb-6 rounded-xl bg-ohm/5 border border-ohm/20 px-5 py-4 text-slate-700">
+          <h2 className="font-bold text-slate-900">How to use it</h2>
+          <ol className="mt-1 list-decimal pl-5 space-y-0.5 text-sm sm:text-base">
+            <li>Enter <strong>two</strong> known values from voltage, current, resistance and power. Add time if you also want energy.</li>
+            <li>Work out the missing values yourself on paper.</li>
+            <li>Press <strong>Calculate</strong> to check your answers, then go through the working step by step.</li>
+          </ol>
+        </section>
+
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+          {/* Inputs + formulas */}
+          <div className="space-y-6 lg:self-start">
+          <form onSubmit={calculate} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold">Known values</h2>
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${filledMain >= 2 ? 'bg-energy/10 text-energy' : 'bg-slate-100 text-slate-500'}`}>
+                {Math.min(filledMain, 2)} of 2 entered
+              </span>
+            </div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
+              {MAIN_KEYS.map((k) => (
+                <Field key={k} id={k} value={inputs[k]} onChange={onChange} disabled={isDisabled(k)} />
+              ))}
+            </div>
+            <div className="my-5 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              <span className="h-px flex-1 bg-slate-200" /> Optional, for energy <span className="h-px flex-1 bg-slate-200" />
+            </div>
+            <Field id="t" value={inputs.t} onChange={onChange} disabled={false} />
+            <div className="mt-6 flex gap-3">
+              <button type="submit" className="flex-1 rounded-lg bg-ohm px-4 py-3 font-bold text-white shadow-sm transition hover:bg-ohm/90 focus:outline-none focus:ring-2 focus:ring-ohm focus:ring-offset-2">
+                Calculate
+              </button>
+              <button type="button" onClick={reset} className="rounded-lg border border-slate-300 bg-white px-4 py-3 font-semibold text-slate-700 transition hover:bg-slate-50">
+                Reset
+              </button>
+            </div>
+          </form>
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-lg font-bold">Formula reference</h2>
+              <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
+                {FORMULAS.map(([f, note]) => (
+                  <li key={f} className="rounded-lg bg-slate-50 px-3 py-2">
+                    <div className="font-mono font-semibold text-slate-900">{f}</div>
+                    {note && <div className="text-xs text-slate-500">{note}</div>}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
+
+          {/* Output */}
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-lg font-bold">Circuit</h2>
+              <div className="mx-auto mt-2 max-w-md">
+                <Circuit shown={shown} />
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6" aria-live="polite">
+              <h2 className="text-lg font-bold">Results &amp; working</h2>
+
+              {!result && (
+                <p className="mt-3 text-slate-500">Enter two values and press <strong>Calculate</strong> to see the results here.</p>
+              )}
+
+              {result?.error && (
+                <p className="mt-3 rounded-lg bg-red-50 px-4 py-3 text-red-700">{result.error}</p>
+              )}
+
+              {result?.values && (
+                <>
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {['v', 'i', 'r', 'p', 't', 'e'].map((k) => (
+                      <ValueTile
+                        key={k}
+                        id={k}
+                        value={result.values[k]}
+                        isGiven={result.given.includes(k)}
+                        revealed={k in shown || result.given.includes(k)}
+                      />
+                    ))}
+                  </div>
+
+                  <ol className="mt-5 space-y-3">
+                    {steps.slice(0, revealed).map((s, idx) => (
+                      <Step key={idx} step={s} index={idx} />
+                    ))}
+                  </ol>
+
+                  <div className="mt-5 flex flex-wrap items-center gap-3">
+                    {!allShown ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setRevealed((n) => n + 1)}
+                          className="rounded-lg bg-slate-900 px-4 py-2.5 font-semibold text-white transition hover:bg-slate-700"
+                        >
+                          {revealed === 0 ? 'Show working step by step' : `Next step (${revealed + 1} of ${steps.length})`}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRevealed(steps.length)}
+                          className="rounded-lg px-3 py-2.5 font-semibold text-slate-600 underline-offset-2 hover:underline"
+                        >
+                          Show all working
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-semibold text-energy">✓ All steps shown</span>
+                        <button
+                          type="button"
+                          onClick={() => setRevealed(0)}
+                          className="rounded-lg px-3 py-2.5 font-semibold text-slate-600 underline-offset-2 hover:underline"
+                        >
+                          Hide working
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </section>
+          </div>
+        </div>
+      </main>
+
+      <footer className="pb-8 text-center text-sm text-slate-500">
+        A learning aid. The goal is to understand the method, not just get the number.
+      </footer>
+    </div>
+  );
+}
